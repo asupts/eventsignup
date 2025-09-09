@@ -504,7 +504,7 @@ async function handleSubmit(){
             <div className="rounded-2xl overflow-hidden shadow-sm border asu-border-maroon/30 bg-white">
               {/* Header with time labels */}
               <div className="flex border-b asu-border-maroon/30 asu-bg-maroon-soft">
-                <div className="w-40 shrink-0 p-2 text-[10px] uppercase tracking-wide asu-maroon font-semibold border-r asu-border-maroon/30">
+                <div className="w-40 shrink-0 p-2 text-[10px] uppercase tracking-wide asu-maroon font-bold border-r asu-border-maroon/30">
                   Date / Events
                 </div>
                 <div ref={headerRef} className="overflow-x-auto nice-scroll" style={{maxWidth:'100%'}}>
@@ -513,7 +513,7 @@ async function handleSubmit(){
                       const start=minutesToHHMM(m);
                       const end=minutesToHHMM(m+intervalMin);
                       return (
-                        <div key={m} className="border-r p-2 text-xs text-gray-800 text-center nowrap asu-border-maroon/20" style={{width: colW}}>
+                        <div key={m} className="border-r h-12 p-2 text-xs text-gray-800 text-center nowrap asu-border-maroon/20 font-bold" style={{width: colW}}>
                           <span className="asu-maroon">{start}</span> – <span className="asu-maroon">{end}</span>
                         </div>
                       );
