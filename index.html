@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Submit Your Availability</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    /* --- ASU palette --- */
+    .asu-maroon { color: #8C1D40; }                  /* text maroon */
+    .asu-bg-maroon { background-color: #8C1D40; }    /* bg maroon  */
+    .asu-bg-maroon-700 { background-color: #6E1631; }
+    .asu-gold { color: #FFC627; }                    /* text gold   */
+    .asu-bg-gold { background-color: #FFC627; }      /* gold bg     */
+    .asu-bg-gold-strong { background-color: #FFDD6E; }
+    .asu-bg-gold-light { background-color: #FFF6DB; }
+    .asu-bg-maroon-soft { background-color: #F7E7EB; }
+    .asu-border-maroon { border-color: #8C1D40; }
+    .asu-border-gold { border-color: #FFC627; }
+
+    /* Scrollbars */
+    .nice-scroll::-webkit-scrollbar{height:10px;width:10px}
+    .nice-scroll::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:9999px}
+    .nice-scroll::-webkit-scrollbar-track{background:#f3f4f6}
+
+    /* Painting surface: block one-finger scrolling; allow two-finger when JS toggles .allow-scroll */
+    .paintable{touch-action:none;-webkit-user-select:none;user-select:none}
+    .paintable.allow-scroll{touch-action:auto}
+    .nowrap{white-space:nowrap}
+  </style>
+</head>
+<body class="asu-bg-gold-light text-gray-900">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const {useMemo,useState,useEffect,useRef} = React;
+
+    // ===== Fixed wiring (hidden to participants) =====
+    const WEBAPP_URL   = "https://script.google.com/macros/s/AKfycbx3Jp4l6UMjhbEX5eZWNA_NjYCyodn7vyLRF6_Nrk-DSQ_ryYho3xJdnVk5F0zDd0R1qg/exec";
+    const SHEET_ID     = "1EugnoIdz0mA2rUlyyC-glf7isAXz8GA59bn8tZ7lx2w";
+    const EVENTS_TAB   = "Events";
+    const CONFIG_TAB   = "Config";
+
+    // ===== Utilities =====
+    const pad=n=>String(n).padStart(2,'0');
+    const minutesToHHMM=mins=>`${pad(Math.floor(mins/60))}:${pad(mins%60)}`;
+    const HHMMtoMinutes=t=>{const [h,m]=t.split(':').map(Number);return (h||0)*60+(m||0)};
+    const addDays=(d,n)=>{const x=new Date(d);x.setDate(x.getDate()+n);return x};
+    const addMinutes=(d,m)=>new Date(d.getTime()+m*60000);
+    const toDateInput=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    const tryDate=v=>{const d=v instanceof Date?v:new Date(v);return isNaN(d)?null:d};
+    const dateKey=d=>d.toISOString().slice(0,10);
+
+    function jsonp(url){
+      return new Promise((resolve,reject)=>{
+        const cb="__cb_"+Math.random().toString(36).slice(2);
+        window[cb]=(data)=>{try{resolve(data)}finally{delete window[cb];s.remove();}};
+        const s=document.createElement('script');
+        s.src=url+(url.includes('?')?'&':'?')+`callback=${cb}`;
+        s.onerror=()=>{delete window[cb];s.remove();reject(new Error('JSONP failed'))};
+        document.body.appendChild(s);
+      });
+    }
+
+    // Colors for event legend/backgrounds (keep event-specific colors)
+    const PALETTE=['#60a5fa','#f472b6','#34d399','#fbbf24','#a78bfa','#f87171','#22d3ee','#fb7185'];
+    const hash=s=>{let h=0;for(let i=0;i<s.length;i++){h=(h<<5)-h+s.charCodeAt(i);h|=0}return Math.abs(h)};
+    const colorFor=t=>PALETTE[hash(String(t))%PALETTE.length];
+    const hexToRgba=(hex,a)=>{const m=hex.replace('#','');const r=parseInt(m.slice(0,2),16),g=parseInt(m.slice(2,4),16),b=parseInt(m.slice(4,6),16);return `rgba(${r},${g},${b},${a})`};
+
+    function App(){
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
+      // Loading overlay
+      const [loading,setLoading]=useState(true);
+      const [submitting,setSubmitting]=useState(false);
+      const [error,setError]=useState('');
+
+      // Contact
+      const [name,setName]=useState('');
+      const [email,setEmail]=useState('');
+
+      // Window (from Config)
+      const [startDateStr,setStartDateStr]=useState('');
+      const [endDateStr,setEndDateStr]=useState('');
+      const [startTimeStr,setStartTimeStr]=useState('');
+      const [endTimeStr,setEndTimeStr]=useState('');
+      const [intervalMin,setIntervalMin]=useState(60);
+
+      // Events
+      const [events,setEvents]=useState([]);
+
+      // Selection grid
+      const [selected,setSelected]=useState({});
+      const [isDragging,setIsDragging]=useState(false);
+      const [paintMode,setPaintMode]=useState('add');
+
+      // Fetch config + events
+      async function loadAll(){
+        setLoading(true); setError('');
+        try{
+          // 1) Config
+          const cfg = await jsonp(`${WEBAPP_URL}?id=${encodeURIComponent(SHEET_ID)}&sheet=${encodeURIComponent(CONFIG_TAB)}&mode=config`);
+          if(!cfg?.ok) throw new Error(cfg?.error||'Failed to read Config');
+          setStartDateStr(cfg.config.startDate);
+          setEndDateStr(cfg.config.endDate);
+          setStartTimeStr(cfg.config.startTime);
+          setEndTimeStr(cfg.config.endTime);
+          setIntervalMin(cfg.config.intervalMin);
+
+          // 2) Events
+          const ev = await jsonp(`${WEBAPP_URL}?id=${encodeURIComponent(SHEET_ID)}&sheet=${encodeURIComponent(EVENTS_TAB)}`);
+          if(!ev?.ok) throw new Error(ev?.error||'Failed to read Events');
+          const mapped=(ev.events||[]).map(e=>({title:e.title||'Untitled',start:tryDate(e.start),end:tryDate(e.end),color:colorFor(e.title||'Untitled')}))
+                                      .filter(e=>e.start&&e.end);
+          setEvents(mapped);
+        }catch(err){
+          setError(err?.message||String(err));
+        }finally{
+          setLoading(false);
+        }
+      }
+      useEffect(()=>{ loadAll(); },[]);
+
+      const parseYMD = (s) => {
+        if (!s) return new Date(NaN);
+        const [y,m,d] = s.split('-').map(n=>parseInt(n,10));
+        return new Date(y, (m||1)-1, d||1);  // local midnight
+      };
+
+      // Derived axes
+      const startDate = useMemo(()=> parseYMD(startDateStr), [startDateStr]);
+      const endDate   = useMemo(()=> parseYMD(endDateStr),   [endDateStr]);
+
+      const days=useMemo(()=>{
+        if(!startDateStr||!endDateStr) return [];
+        const out=[]; let d=new Date(startDate);
+        while(d<=endDate){ out.push(new Date(d)); d=addDays(d,1); }
+        return out;
+      },[startDateStr,endDateStr]);
+
+      const timeSlots=useMemo(()=>{
+        if(!startTimeStr||!endTimeStr||!intervalMin) return [];
+        const s=HHMMtoMinutes(startTimeStr), e=HHMMtoMinutes(endTimeStr), out=[];
+        for(let m=s; m<=e-1; m+=intervalMin) out.push(m);
+        return out;
+      },[startTimeStr,endTimeStr,intervalMin]);
+
+      // Events by day & by slot (overlap aware)
+      const eventsByDay = useMemo(()=>{
+        const map=new Map();
+        for(const ev of events){
+          const sd=new Date(ev.start.getFullYear(),ev.start.getMonth(),ev.start.getDate());
+          const ed=new Date(ev.end.getFullYear(),ev.end.getMonth(),ev.end.getDate());
+          for(let d=new Date(sd); d<=ed; d=addDays(d,1)){
+            const k=dateKey(d); if(!map.has(k)) map.set(k,[]); map.get(k).push(ev);
+          }
+        }
+        for(const [,arr] of map.entries()) arr.sort((a,b)=>a.start-b.start);
+        return map;
+      },[events]);
+
+      const slotEventsMap = useMemo(()=>{
+        const map=new Map();
+        for(const day of days){
+          const k=dateKey(day);
+          const todays=eventsByDay.get(k)||[];
+          if(!todays.length) continue;
+          for(const m of timeSlots){
+            const slotStart=new Date(day.getFullYear(),day.getMonth(),day.getDate(),Math.floor(m/60),m%60,0,0);
+            const slotEnd=addMinutes(slotStart,intervalMin);
+            const list=todays.filter(ev=> (slotEnd>ev.start) && (slotStart<ev.end));
+            if(list.length) map.set(`${k}|${minutesToHHMM(m)}`,list);
+          }
+        }
+        return map;
+      },[days,timeSlots,eventsByDay,intervalMin]);
+
+      // Painting (with two-finger scroll support)
+      const bodyRef=useRef(null);
+      function toggleCell(k,mode){
+        setSelected(prev=>{
+          const next={...prev};
+          const add = mode ? mode==='add' : !prev[k];
+          if(add) next[k]=true; else delete next[k];
+          return next;
+        });
+      }
+      function onPointerDown(e){
+        if(e.button && e.button!==0) return;
+        if(e.pointerType==='touch' && e.isPrimary===false) return;
+
+        const el=e.target.closest('[data-k]');
+        if(!el) return;
+        const k=el.getAttribute('data-k');
+        const isOn=!!selected[k];
+        setPaintMode(isOn?'remove':'add');
+        setIsDragging(true);
+        toggleCell(k,isOn?'remove':'add');
+      }
+      function onPointerMove(e){
+        if(!isDragging) return;
+        const point=(e.touches&&e.touches[0])?{x:e.touches[0].clientX,y:e.touches[0].clientY}:{x:e.clientX,y:e.clientY};
+        const el=document.elementFromPoint(point.x,point.y)?.closest?.('[data-k]');
+        if(!el) return;
+        toggleCell(el.getAttribute('data-k'),paintMode);
+      }
+      function onPointerUp(){ setIsDragging(false); }
+
+      // enable two-finger scroll by toggling touch-action at runtime
+      useEffect(()=>{
+        const el=bodyRef.current;
+        if(!el) return;
+        function ts(e){ if(e.touches && e.touches.length>=2) el.classList.add('allow-scroll'); }
+        function te(){ el.classList.remove('allow-scroll'); }
+        el.addEventListener('touchstart',ts,{passive:true});
+        el.addEventListener('touchend',te,{passive:true});
+        el.addEventListener('touchcancel',te,{passive:true});
+        return ()=>{ el.removeEventListener('touchstart',ts); el.removeEventListener('touchend',te); el.removeEventListener('touchcancel',te); };
+      },[]);
+
+      // Submit
+// Submit
+async function handleSubmit(){
+  const selections = Object.keys(selected)
+    .sort()
+    .map(k=>{const [date,time]=k.split('|');return {date,time};});
+
+  if(!name.trim()||!email.trim()||selections.length===0){
+    alert('Please fill contact and select at least one slot.');
+    return;
+  }
+
+  // compressed ranges (per date) using actual interval
+  const compressed = (()=> {
+    const byDate={};
+    selections.forEach(s=>{ (byDate[s.date]??=[]).push(s.time); });
+    const out=[];
+    for(const [date,times] of Object.entries(byDate)){
+      const sorted=[...times].sort(); if(!sorted.length) continue;
+      let start=sorted[0], prev=sorted[0];
+      const ranges=[];
+      for(let i=1;i<sorted.length;i++){
+        const pm=HHMMtoMinutes(prev), cm=HHMMtoMinutes(sorted[i]);
+        // break range if the gap is NOT exactly one slot or if out of order
+        if(cm - pm !== intervalMin){
+          ranges.push({start,end:prev});
+          start=sorted[i];
+        }
+        prev=sorted[i];
+      }
+      ranges.push({start,end:prev});
+      out.push({date,ranges});
+    }
+    return out;
+  })();
+
+  // Build a human-friendly summary (e.g., "Mon, Sep 08: 09:00–11:00; 14:00–15:00")
+  const humanDate = (iso)=> {
+    const d = tryDate(iso);
+    return d
+      ? d.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})
+      : iso;
+  };
+  const rangeLabel = (r)=> {
+    const endExclusive = minutesToHHMM(HHMMtoMinutes(r.end) + intervalMin);
+    return `${r.start}–${endExclusive}`;
+  };
+  const summaryLines = compressed.map(({date,ranges}) =>
+    `${humanDate(date)}: ${ranges.map(rangeLabel).join('; ')}`
+  );
+
+  const payload={
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    name, email,
+    startDate: startDateStr, endDate: endDateStr,
+    startTime: startTimeStr, endTime: endTimeStr,
+    intervalMinutes: intervalMin,
+    selections, compressed
+  };
+
+  setSubmitting(true);
+  try{
+    const fd=new FormData(); fd.append('data', JSON.stringify(payload));
+    const res=await fetch(WEBAPP_URL,{method:'POST',body:fd});
+    let ok=false;
+    try{ ok=(await res.json()).ok; }catch(_){}
+
+    // Show detailed confirmation with what was submitted
+    const header = ok ? 'Submitted!' : 'Submitted (check sheet).';
+    alert(
+      `${header}\n\n`+
+      `Name: ${name}\nEmail: ${email}\n`+
+      `Total slots: ${selections.length}\n\n`+
+      summaryLines.join('\n')
+    );
+
+    if(ok) {setSelected({}); setName(''); setEmail('');}
+  }catch(err){
+    alert('Submit failed: '+(err?.message||String(err)));
+  }finally{
+    setSubmitting(false);
+  }
+}
+
+      // Layout numbers
+      const colW = (window.innerWidth<640?88:110);
+      const rowH = (window.innerWidth<640?56:48);
+      const selectedCount=Object.keys(selected).length;
+
+      function slotBg(evs){
+        if(!evs?.length) return 'transparent';
+        if(evs.length===1) return hexToRgba(evs[0].color,0.18);
+        const c1=hexToRgba(evs[0].color,0.18), c2=hexToRgba(evs[1].color,0.18);
+        /* Keep the user's 180° overlap style but fit ASU scheme elsewhere */
+        return `linear-gradient(180deg, ${c1} 0 50%, ${c2} 50% 100%)`;
+      }
+
+      // Quick actions
+      const clearAll = ()=> setSelected({});
+
+      function copyMondayToWeekdays(){
+        if(!days.length) return;
+        const monday = days.find(d=>d.getDay()===1) || days[0];
+        const mk = monday ? monday.toISOString().slice(0,10) : null;
+        if(!mk) return;
+        const times = timeSlots.filter(m=> selected[`${mk}|${minutesToHHMM(m)}`]);
+        setSelected(prev=>{
+          const next={...prev};
+          days.forEach(d=>{
+            const dow=d.getDay();
+            if(dow>=1 && dow<=5){
+              const dk=d.toISOString().slice(0,10);
+              timeSlots.forEach(m=> delete next[`${dk}|${minutesToHHMM(m)}`]);
+              times.forEach(m=> next[`${dk}|${minutesToHHMM(m)}`]=true);
+            }
+          });
+          return next;
+        });
+      }
+
+      function copyWeekendToWeekends(){
+        if(!days.length) return;
+        const firstSat = days.find(d=>d.getDay()===6);
+        const firstSun = days.find(d=>d.getDay()===0);
+        const satTimes = firstSat ? timeSlots.filter(m=> selected[`${firstSat.toISOString().slice(0,10)}|${minutesToHHMM(m)}`]) : [];
+        const sunTimes = firstSun ? timeSlots.filter(m=> selected[`${firstSun.toISOString().slice(0,10)}|${minutesToHHMM(m)}`]) : [];
+        setSelected(prev=>{
+          const next={...prev};
+          days.forEach(d=>{
+            const dk=d.toISOString().slice(0,10);
+            if(d.getDay()===6){ timeSlots.forEach(m=> delete next[`${dk}|${minutesToHHMM(m)}`]); satTimes.forEach(m=> next[`${dk}|${minutesToHHMM(m)}`]=true); }
+            if(d.getDay()===0){ timeSlots.forEach(m=> delete next[`${dk}|${minutesToHHMM(m)}`]); sunTimes.forEach(m=> next[`${dk}|${minutesToHHMM(m)}`]=true); }
+          });
+          return next;
+        });
+      }
+
+      function copyFirstWeekToAllWeeks(){
+        if(days.length<7) return;
+        let wStart = days.findIndex(d=>d.getDay()===1); // Monday anchor
+        if(wStart===-1) wStart=0;
+        const base=[];
+        for(let j=0;j<7;j++){
+          const day=days[wStart+j]; if(!day){ base.push([]); continue; }
+          const dk=day.toISOString().slice(0,10);
+          base.push(timeSlots.filter(m=> selected[`${dk}|${minutesToHHMM(m)}`]));
+        }
+        setSelected(prev=>{
+          const next={...prev};
+          for(let i=wStart+7;i<days.length;i+=7){
+            for(let j=0;j<7;j++){
+              const di=i+j; if(di>=days.length) break;
+              const dk=days[di].toISOString().slice(0,10);
+              timeSlots.forEach(m=> delete next[`${dk}|${minutesToHHMM(m)}`]);
+              (base[j]||[]).forEach(m=> next[`${dk}|${minutesToHHMM(m)}`]=true);
+            }
+          }
+          return next;
+        });
+      }
+
+      // Scroll sync
+      const headerRef=useRef(null);
+      const leftRef=useRef(null);
+      
+      useEffect(()=>{
+        const h=headerRef.current, l=leftRef.current, b=bodyRef.current; if(!h||!l||!b) return;
+        const onB=()=>{ if(h.scrollLeft!==b.scrollLeft) h.scrollLeft=b.scrollLeft; if(l.scrollTop!==b.scrollTop) l.scrollTop=b.scrollTop; };
+        const onH=()=>{ if(b.scrollLeft!==h.scrollLeft) b.scrollLeft=h.scrollLeft; };
+        const onL=()=>{ if(b.scrollTop!==l.scrollTop) b.scrollTop=l.scrollTop; };
+        b.addEventListener('scroll',onB,{passive:true});
+        h.addEventListener('scroll',onH,{passive:true});
+        l.addEventListener('scroll',onL,{passive:true});
+        return ()=>{ b.removeEventListener('scroll',onB); h.removeEventListener('scroll',onH); l.removeEventListener('scroll',onL); };
+      },[days.length,timeSlots.length]);
+
+      return (
+        <div className="min-h-screen w-full p-3 sm:p-6">
+          {/* Loading / Submitting overlay with ASU spinner */}
+          {(loading || submitting) && (
+            <div className="fixed inset-0 bg-white/70 backdrop-blur-sm z-50 flex items-center justify-center">
+              <div className="animate-spin h-10 w-10 rounded-full border-4 asu-border-maroon border-t-[#FFC627]"></div>
+              <span className="ml-3 font-medium asu-maroon">{loading?'Loading…':'Submitting…'}</span>
+            </div>
+          )}
+
+          <div className="max-w-6xl mx-auto">
+            <h1 className="text-xl sm:text-3xl font-semibold mb-2 asu-maroon">Submit Your Event Availability</h1>
+            <p className="text-xs sm:text-sm mb-4">
+              Drag to paint times you are <b className="asu-maroon">available</b>. Local timezone:
+              <span className="font-mono asu-bg-maroon-soft px-2 py-0.5 rounded ml-1 asu-border-maroon border">{tz}</span>
+            </p>
+
+            {/* Contact */}
+            <div className="rounded-2xl shadow-sm bg-white p-4 mb-3 border asu-border-maroon/20">
+              <h2 className="font-medium mb-3 asu-maroon">Contact</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm mb-1 asu-maroon">Name *</label>
+                  <input value={name} onChange={e=>setName(e.target.value)}
+                         className="w-full border rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFC627] border-gray-300"
+                         placeholder="Your name"/>
+                </div>
+                <div>
+                  <label className="block text-sm mb-1 asu-maroon">Email *</label>
+                  <input type="email" value={email} onChange={e=>setEmail(e.target.value)}
+                         className="w-full border rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFC627] border-gray-300"
+                         placeholder="you@example.com"/>
+                </div>
+              </div>
+            </div>
+
+            {/* Time window (read-only) */}
+            <div className="rounded-2xl shadow-sm bg-white p-4 mb-3 border asu-border-maroon/20">
+              <h2 className="font-medium mb-3 asu-maroon">Time window</h2>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                <div>
+                  <label className="block text-sm mb-1 asu-maroon">Start date</label>
+                  <input type="date" value={startDateStr} disabled className="w-full border rounded-xl px-3 py-2 asu-bg-maroon-soft"/>
+                </div>
+                <div>
+                  <label className="block text-sm mb-1 asu-maroon">End date</label>
+                  <input type="date" value={endDateStr} disabled className="w-full border rounded-xl px-3 py-2 asu-bg-maroon-soft"/>
+                </div>
+                <div>
+                  <label className="block text-sm mb-1 asu-maroon">Start time</label>
+                  <input type="time" value={startTimeStr} disabled className="w-full border rounded-xl px-3 py-2 asu-bg-maroon-soft"/>
+                </div>
+                <div>
+                  <label className="block text-sm mb-1 asu-maroon">End time</label>
+                  <input type="time" value={endTimeStr} disabled className="w-full border rounded-xl px-3 py-2 asu-bg-maroon-soft"/>
+                </div>
+                <div>
+                  <label className="block text-sm mb-1 asu-maroon">Interval (min)</label>
+                  <input value={intervalMin} disabled className="w-full border rounded-xl px-3 py-2 asu-bg-maroon-soft"/>
+                </div>
+              </div>
+            </div>
+
+            {/* Event legend */}
+            {!!events.length && (
+              <div className="rounded-2xl shadow-sm bg-white p-4 mb-3 border asu-border-maroon/20">
+                <h2 className="font-medium mb-2 asu-maroon">Event legend</h2>
+                <div className="flex flex-wrap gap-2">
+                  {events.slice(0,16).map((e,i)=>(
+                    <span key={i} className="inline-flex items-center gap-2 text-xs px-2 py-1 rounded border"
+                          style={{backgroundColor:'rgba(140,29,64,0.06)', borderColor:e.color}}>
+                      <span className="w-2.5 h-2.5 rounded" style={{background:e.color}}></span>{e.title}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Quick Actions */}
+            <div className="rounded-2xl shadow-sm bg-white p-4 mb-3 border asu-border-maroon/20">
+              <h2 className="font-medium mb-3 asu-maroon">Quick actions</h2>
+              <div className="flex flex-wrap gap-2 items-center">
+                <button onClick={clearAll}
+                        className="px-3 py-1.5 text-sm rounded-lg border asu-border-maroon text-gray-800 hover:asu-bg-maroon-soft">
+                  Clear All
+                </button>
+                <button onClick={copyMondayToWeekdays}
+                        className="px-3 py-1.5 text-sm rounded-lg asu-bg-maroon text-white hover:asu-bg-gold hover:text-black">
+                  Copy Mon→Weekdays
+                </button>
+                <button onClick={copyFirstWeekToAllWeeks}
+                        className="px-3 py-1.5 text-sm rounded-lg asu-bg-gold text-black hover:asu-bg-gold-strong">
+                  Copy First Week→All
+                </button>
+                <button onClick={copyWeekendToWeekends}
+                        className="px-3 py-1.5 text-sm rounded-lg border asu-border-gold hover:asu-bg-gold-strong">
+                  Copy Weekend→Weekends
+                </button>
+                <span className="ml-auto text-sm asu-maroon">{Object.keys(selected).length} slot(s) selected</span>
+              </div>
+            </div>
+
+            {/* Grid */}
+            <div className="rounded-2xl overflow-hidden shadow-sm border asu-border-maroon/30 bg-white">
+              {/* Header with time labels */}
+              <div className="flex border-b asu-border-maroon/30 asu-bg-maroon-soft">
+                <div className="w-40 shrink-0 p-2 text-[10px] uppercase tracking-wide asu-maroon font-semibold border-r asu-border-maroon/30">
+                  Date / Events
+                </div>
+                <div ref={headerRef} className="overflow-x-auto nice-scroll" style={{maxWidth:'100%'}}>
+                  <div className="flex" style={{width: timeSlots.length*colW}}>
+                    {timeSlots.map(m=>{
+                      const start=minutesToHHMM(m);
+                      const end=minutesToHHMM(m+intervalMin);
+                      return (
+                        <div key={m} className="border-r p-2 text-xs text-gray-800 text-center nowrap asu-border-maroon/20" style={{width: colW}}>
+                          <span className="asu-maroon">{start}</span> – <span className="asu-maroon">{end}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex">
+                {/* Left dates */}
+                <div ref={leftRef} className="w-40 shrink-0 border-r overflow-y-auto asu-border-maroon/20" style={{maxHeight:'65vh'}}>
+                  {days.map(d=>{
+                    const dk=dateKey(d); const list=eventsByDay.get(dk)||[];
+                    return (
+                      <div key={dk} className="border-b asu-border-maroon/20" style={{height: rowH}}>
+                        <div className="px-2 pt-1 text-xs text-gray-900 font-medium">
+                          <span className="asu-maroon">{d.toLocaleDateString(undefined,{weekday:'short'})}</span>{' '}
+                          {d.toLocaleDateString(undefined,{month:'short',day:'numeric'})}
+                        </div>
+                        <div className="px-2 pb-1 flex flex-wrap gap-1">
+                          {list.slice(0,4).map((ev,i)=>(
+                            <span key={i} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border"
+                                  style={{backgroundColor:'rgba(255,198,39,0.12)', borderColor:ev.color}}
+                                  title={ev.title}>
+                              <span className="w-2 h-2 rounded" style={{background:ev.color}}></span>
+                              <span className="truncate max-w-[7rem]">{ev.title}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Body (paint) */}
+                <div ref={bodyRef}
+                     className="overflow-auto nice-scroll paintable select-none"
+                     style={{maxHeight:'65vh'}}
+                     onPointerDown={onPointerDown}
+                     onPointerMove={onPointerMove}
+                     onPointerUp={onPointerUp}>
+                  <div style={{width: timeSlots.length*colW}}>
+                    {days.map(d=>{
+                      const dk=dateKey(d);
+                      return (
+                        <div key={dk} className="flex border-b asu-border-maroon/20" style={{height: rowH}}>
+                          {timeSlots.map(m=>{
+                            const key=`${dk}|${minutesToHHMM(m)}`;
+                            const evs=slotEventsMap.get(key)||[];
+                            return (
+                              <div key={key} data-k={key}
+                                   className="relative h-full border-r cursor-pointer hover:bg-[#FFF0CC] asu-border-maroon/20"
+                                   style={{width: colW, background: slotBg(evs)}}
+                                   title={evs.map(e=>e.title).join(', ')}>
+                                {/* Selected overlay in ASU maroon */}
+                                {selected[key] && <div className="absolute inset-0" style={{background:'rgba(140, 29, 64, 0.45)'}}></div>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Submit */}
+<div className="mt-6 flex flex-col gap-2">
+  {/* Note */}
+  <p className="text-sm text-gray-700 italic">
+    Note: Submitting again for the same time window will override your previous submission.
+  </p>
+
+  <div className="flex gap-3 items-center">
+    <button
+      onClick={handleSubmit}
+      disabled={!name.trim()||!email.trim()||selectedCount===0}
+      className="px-6 py-3 rounded-2xl asu-bg-maroon text-white disabled:bg-gray-300 hover:asu-bg-gold hover:text-black transition"
+    >
+      Submit Availability ({selectedCount})
+    </button>
+    {error && <span className="text-sm text-red-600">{error}</span>}
+  </div>
+</div>
+
+            </div>
+            </div>  
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>
