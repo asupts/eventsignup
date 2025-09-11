@@ -30,6 +30,14 @@
     .paintable{touch-action:none;-webkit-user-select:none;user-select:none}
     .paintable.allow-scroll{touch-action:auto}
     .nowrap{white-space:nowrap}
+
+    @media (max-width: 640px) {
+      /* Lock header from user scrolling on phones; we still scroll it via JS */
+      .header-locked { overflow-x: hidden !important; pointer-events: none; }
+      /* Optional: hide any scrollbar decoration if it still shows */
+      .xs-hide-scrollbar::-webkit-scrollbar { display: none; }
+    }
+
   </style>
 </head>
 <body class="asu-bg-gold-light text-gray-900">
@@ -52,7 +60,7 @@
     const addMinutes=(d,m)=>new Date(d.getTime()+m*60000);
     const toDateInput=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
     const tryDate=v=>{const d=v instanceof Date?v:new Date(v);return isNaN(d)?null:d};
-    const dateKey=d=>d.toISOString().slice(0,10);
+    const dateKey = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 
     function jsonp(url){
       return new Promise((resolve,reject)=>{
@@ -71,6 +79,9 @@
     const colorFor=t=>PALETTE[hash(String(t))%PALETTE.length];
     const hexToRgba=(hex,a)=>{const m=hex.replace('#','');const r=parseInt(m.slice(0,2),16),g=parseInt(m.slice(2,4),16),b=parseInt(m.slice(4,6),16);return `rgba(${r},${g},${b},${a})`};
 
+    // Utilities (put near your other helpers)
+    const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
+
     function App(){
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
@@ -82,6 +93,9 @@
       // Contact
       const [name,setName]=useState('');
       const [email,setEmail]=useState('');
+      // near your other state
+      const [isXS, setIsXS] = useState(false);
+
 
       // Window (from Config)
       const [startDateStr,setStartDateStr]=useState('');
@@ -97,6 +111,73 @@
       const [selected,setSelected]=useState({});
       const [isDragging,setIsDragging]=useState(false);
       const [paintMode,setPaintMode]=useState('add');
+
+      // Dynamic slot/date column widths
+        const [colW, setColW] = useState(110);
+        const [leftColW, setLeftColW] = useState(144);
+
+        // Measure the grid card to compute widths that fit the screen
+        const gridWrapperRef = useRef(null);
+
+          const timeSlots = useMemo(() => {
+      if (!startTimeStr || !endTimeStr || !intervalMin) return [];
+      const s = HHMMtoMinutes(startTimeStr);
+      const e = HHMMtoMinutes(endTimeStr);
+      if (intervalMin <= 0 || e <= s) return [];
+
+      const out = [];
+
+      // Regular slots: start before the end time (may overrun the day end)
+      for (let m = s; m < e; m += intervalMin) {
+        out.push(m);
+      }
+
+  // Ensure we always include the last slot that starts before `e`,
+  // even when (e - s) is not a multiple of intervalMin.
+  const lastStart = s + Math.floor((e - s - 1) / intervalMin) * intervalMin; // strictly < e
+  if (out.length === 0 || out[out.length - 1] !== lastStart) {
+    out.push(lastStart);
+  }
+
+  // De-dup + sort (just in case)
+  return Array.from(new Set(out)).sort((a, b) => a - b);
+}, [startTimeStr, endTimeStr, intervalMin]);
+
+      useEffect(() => {
+            const el = gridWrapperRef.current;
+            if (!el) return;
+
+            const compute = () => {
+              const mq = window.matchMedia('(max-width: 640px)');
+              const isXSNow = mq.matches;
+              setIsXS(isXSNow);
+
+              const MIN_COL = isXSNow ? 64 : 90;
+              const LEFT_W  = isXSNow ? 80 : 144;
+
+              setLeftColW(LEFT_W);
+
+              const available = Math.max(0, el.clientWidth - LEFT_W);   // space for slots
+              const n = Math.max(1, timeSlots.length);
+              const ideal = available / n;
+
+              setColW(Math.max(MIN_COL, ideal)); // no max cap
+            };
+
+            compute();
+            const ro = new ResizeObserver(compute);
+            ro.observe(el);
+
+            const onOrient = () => compute();
+            window.addEventListener('resize', onOrient);
+            window.addEventListener('orientationchange', onOrient);
+
+            return () => {
+              ro.disconnect();
+              window.removeEventListener('resize', onOrient);
+              window.removeEventListener('orientationchange', onOrient);
+            };
+          }, [timeSlots.length]);
 
       // Fetch config + events
       async function loadAll(){
@@ -142,12 +223,9 @@
         return out;
       },[startDateStr,endDateStr]);
 
-      const timeSlots=useMemo(()=>{
-        if(!startTimeStr||!endTimeStr||!intervalMin) return [];
-        const s=HHMMtoMinutes(startTimeStr), e=HHMMtoMinutes(endTimeStr), out=[];
-        for(let m=s; m<=e-1; m+=intervalMin) out.push(m);
-        return out;
-      },[startTimeStr,endTimeStr,intervalMin]);
+  
+
+
 
       // Events by day & by slot (overlap aware)
       const eventsByDay = useMemo(()=>{
@@ -223,8 +301,7 @@
       },[]);
 
       // Submit
-// Submit
-async function handleSubmit(){
+      async function handleSubmit(){
   const selections = Object.keys(selected)
     .sort()
     .map(k=>{const [date,time]=k.split('|');return {date,time};});
@@ -234,7 +311,7 @@ async function handleSubmit(){
     return;
   }
 
-  // compressed ranges (per date) using actual interval
+  // Build compressed slot ranges (unchanged, slot-accurate)
   const compressed = (()=> {
     const byDate={};
     selections.forEach(s=>{ (byDate[s.date]??=[]).push(s.time); });
@@ -245,9 +322,8 @@ async function handleSubmit(){
       const ranges=[];
       for(let i=1;i<sorted.length;i++){
         const pm=HHMMtoMinutes(prev), cm=HHMMtoMinutes(sorted[i]);
-        // break range if the gap is NOT exactly one slot or if out of order
-        if(cm - pm !== intervalMin){
-          ranges.push({start,end:prev});
+        if(cm - pm !== intervalMin){ // not contiguous slot
+          ranges.push({start,end:prev}); // end = last slot's start
           start=sorted[i];
         }
         prev=sorted[i];
@@ -258,29 +334,60 @@ async function handleSubmit(){
     return out;
   })();
 
-  // Build a human-friendly summary (e.g., "Mon, Sep 08: 09:00–11:00; 14:00–15:00")
-  const humanDate = (iso)=> {
-    const d = tryDate(iso);
-    return d
-      ? d.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})
-      : iso;
-  };
+  // Human-friendly summary with END clipped to configured endTime
+  const endWindowMins = HHMMtoMinutes(endTimeStr);
+  // use local-midnight parsing for Y-M-D
+const humanDate = (ymd) => {
+  // yyyy-mm-dd → local Date at 00:00
+  const d = (() => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+    return m ? new Date(+m[1], +m[2]-1, +m[3]) : new Date(NaN);
+  })();
+  return isNaN(d) ? ymd
+    : d.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
+};
+
   const rangeLabel = (r)=> {
-    const endExclusive = minutesToHHMM(HHMMtoMinutes(r.end) + intervalMin);
-    return `${r.start}–${endExclusive}`;
+    const endExclusiveMins = Math.min(HHMMtoMinutes(r.end) + intervalMin, endWindowMins);
+    return `${r.start}–${minutesToHHMM(endExclusiveMins)}`;
   };
   const summaryLines = compressed.map(({date,ranges}) =>
     `${humanDate(date)}: ${ranges.map(rangeLabel).join('; ')}`
   );
+// Build per-date "HH:MM-HH:MM, ..." strings on the client (with end-time clipping)
+const mergedStrings = (() => {
+  const map = {};
+  for (const { date, ranges } of compressed) {
+    const parts = ranges.map(r => {
+      const endExclusiveMins = Math.min(HHMMtoMinutes(r.end) + intervalMin, endWindowMins);
+      return `${r.start}-${minutesToHHMM(endExclusiveMins)}`;
+    });
+    map[date] = parts.join(', ');
+  }
+  return map;
+})();
 
-  const payload={
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-    name, email,
-    startDate: startDateStr, endDate: endDateStr,
-    startTime: startTimeStr, endTime: endTimeStr,
-    intervalMinutes: intervalMin,
-    selections, compressed
-  };
+  // (Optional) include a clipped version in payload for convenience
+  const clippedCompressed = compressed.map(({date,ranges}) => ({
+    date,
+    ranges: ranges.map(r => {
+      const endExclusiveMins = Math.min(HHMMtoMinutes(r.end) + intervalMin, endWindowMins);
+      return { start: r.start, endLabel: minutesToHHMM(endExclusiveMins) };
+    })
+  }));
+
+ const payload = {
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  name, email,
+  startDate: startDateStr, endDate: endDateStr,
+  startTime: startTimeStr, endTime: endTimeStr,
+  intervalMinutes: intervalMin,
+  selections,
+  compressed,           // slot-accurate (starts)
+  clippedCompressed,    // label-ready ranges (optional)
+  mergedStrings         // <-- authoritative per-day text to store
+};
+
 
   setSubmitting(true);
   try{
@@ -289,7 +396,6 @@ async function handleSubmit(){
     let ok=false;
     try{ ok=(await res.json()).ok; }catch(_){}
 
-    // Show detailed confirmation with what was submitted
     const header = ok ? 'Submitted!' : 'Submitted (check sheet).';
     alert(
       `${header}\n\n`+
@@ -298,7 +404,7 @@ async function handleSubmit(){
       summaryLines.join('\n')
     );
 
-    if(ok) {setSelected({}); setName(''); setEmail('');}
+    if(ok){ setSelected({}); setName(''); setEmail(''); }
   }catch(err){
     alert('Submit failed: '+(err?.message||String(err)));
   }finally{
@@ -306,8 +412,26 @@ async function handleSubmit(){
   }
 }
 
-      // Layout numbers
-      const colW = (window.innerWidth<640?88:110);
+// Layout numbers
+
+          // Base row height + extra per event (compact)
+          const baseRowH   = (window.innerWidth < 640 ? 40 : 44);
+          const perEventH  = 18;          // extra height per event beyond the first
+          const maxEventLines = 3;        // cap growth so rows don't explode
+
+          // Row heights by date (grows to fit 2+ events)
+          const dayHeights = useMemo(() => {
+            const map = new Map();
+            for (const d of days) {
+              const dk = dateKey(d);
+              const n  = (eventsByDay.get(dk) || []).length;
+              const extraLines = Math.max(0, Math.min(n, maxEventLines) - 1);
+              map.set(dk, baseRowH + extraLines * perEventH);
+            }
+            return map;
+          }, [days, eventsByDay, baseRowH, perEventH]);
+
+      
       const rowH = (window.innerWidth<640?56:48);
       const selectedCount=Object.keys(selected).length;
 
@@ -387,16 +511,29 @@ async function handleSubmit(){
       const headerRef=useRef(null);
       const leftRef=useRef(null);
       
-      useEffect(()=>{
-        const h=headerRef.current, l=leftRef.current, b=bodyRef.current; if(!h||!l||!b) return;
-        const onB=()=>{ if(h.scrollLeft!==b.scrollLeft) h.scrollLeft=b.scrollLeft; if(l.scrollTop!==b.scrollTop) l.scrollTop=b.scrollTop; };
-        const onH=()=>{ if(b.scrollLeft!==h.scrollLeft) b.scrollLeft=h.scrollLeft; };
-        const onL=()=>{ if(b.scrollTop!==l.scrollTop) b.scrollTop=l.scrollTop; };
-        b.addEventListener('scroll',onB,{passive:true});
-        h.addEventListener('scroll',onH,{passive:true});
-        l.addEventListener('scroll',onL,{passive:true});
-        return ()=>{ b.removeEventListener('scroll',onB); h.removeEventListener('scroll',onH); l.removeEventListener('scroll',onL); };
-      },[days.length,timeSlots.length]);
+ useEffect(() => {
+  const h = headerRef.current, l = leftRef.current, b = bodyRef.current;
+  if (!h || !l || !b) return;
+
+  const onBody = () => {
+    if (h.scrollLeft !== b.scrollLeft) h.scrollLeft = b.scrollLeft;
+    if (l.scrollTop  !== b.scrollTop ) l.scrollTop  = b.scrollTop;
+  };
+  const onLeft = () => { if (b.scrollTop !== l.scrollTop) b.scrollTop = l.scrollTop; };
+
+  b.addEventListener('scroll', onBody, { passive: true });
+  l.addEventListener('scroll', onLeft, { passive: true });
+
+  // Header doesn't handle user scroll on phones (locked), but keep this for desktop just in case:
+  const onHeader = () => { if (b.scrollLeft !== h.scrollLeft) b.scrollLeft = h.scrollLeft; };
+  h.addEventListener('scroll', onHeader, { passive: true });
+
+  return () => {
+    b.removeEventListener('scroll', onBody);
+    l.removeEventListener('scroll', onLeft);
+    h.removeEventListener('scroll', onHeader);
+  };
+}, [days.length, timeSlots.length]);
 
       return (
         <div className="min-h-screen w-full p-3 sm:p-6">
@@ -501,52 +638,112 @@ async function handleSubmit(){
             </div>
 
             {/* Grid */}
-            <div className="rounded-2xl overflow-hidden shadow-sm border asu-border-maroon/30 bg-white">
+            <div ref={gridWrapperRef} className="rounded-2xl overflow-hidden shadow-sm border asu-border-maroon/30 bg-white">
               {/* Header with time labels */}
-              <div className="flex border-b asu-border-maroon/30 asu-bg-maroon-soft">
-                <div className="w-40 shrink-0 p-2 text-[10px] uppercase tracking-wide asu-maroon font-bold border-r asu-border-maroon/30">
-                  Date / Events
-                </div>
-                <div ref={headerRef} className="overflow-x-auto nice-scroll" style={{maxWidth:'100%'}}>
-                  <div className="flex" style={{width: timeSlots.length*colW}}>
-                    {timeSlots.map(m=>{
-                      const start=minutesToHHMM(m);
-                      const end=minutesToHHMM(m+intervalMin);
-                      return (
-                        <div key={m} className="border-r h-12 p-2 text-xs text-gray-800 text-center nowrap asu-border-maroon/20 font-bold" style={{width: colW}}>
-                          <span className="asu-maroon">{start}</span> – <span className="asu-maroon">{end}</span>
-                        </div>
-                      );
-                    })}
+                <div className="flex border-b asu-border-maroon/30 asu-bg-maroon-soft">
+                  <div
+                    className="shrink-0 p-2 text-[10px] uppercase tracking-wide asu-maroon font-bold border-r asu-border-maroon/30"
+                    style={{ width: leftColW, minWidth: '30px' }}
+                  >
+                    Date
                   </div>
+                  <div
+                    ref={headerRef}
+                    className="nice-scroll header-locked sm:overflow-x-auto"
+                    style={{ maxWidth: '100%' }}
+                  >
+                    <div className="relative" style={{ width: timeSlots.length * colW }}>
+                      {/* keep your optional end-time marker here if you added it */}
+                      <div className="flex">
+                  {timeSlots.map(m => {
+  const start = minutesToHHMM(m);
+  const eMins = HHMMtoMinutes(endTimeStr);
+  const endLabel = minutesToHHMM(Math.min(m + intervalMin, eMins));
+
+  // compact formats for tight cells on phones
+  const hoursOnly   = (s) => s.slice(0, 2);            // "10:00" -> "10"
+  const tooTight    = isXS && colW < 72;               // show only start hour
+  const compactPair = isXS && colW >= 72 && colW < 96; // show "10–14"
+
+  return (
+    <div
+      key={m}
+      className="border-r h-10 px-2 flex items-center justify-center text-[11px] text-gray-800 asu-border-maroon/20 font-bold box-border overflow-hidden"
+      style={{ width: colW }}
+      title={`${start} – ${endLabel}`}
+    >
+      {tooTight ? (
+        // just the start hour
+        <span className="asu-maroon whitespace-nowrap">{hoursOnly(start)}</span>
+      ) : compactPair ? (
+        // hours only, start–end
+        <span className="asu-maroon whitespace-nowrap">
+          {hoursOnly(start)}–{hoursOnly(endLabel)}
+        </span>
+      ) : (
+        // full label
+        <>
+          <span className="asu-maroon whitespace-nowrap">{start}</span>
+          <span className="mx-1">–</span>
+          <span className="asu-maroon whitespace-nowrap">{endLabel}</span>
+        </>
+      )}
+    </div>
+  );
+})}
+
+                      </div>
+                    </div>
+                  </div>
+
                 </div>
-              </div>
+
+              
 
               <div className="flex">
-                {/* Left dates */}
-                <div ref={leftRef} className="w-40 shrink-0 border-r overflow-y-auto asu-border-maroon/20" style={{maxHeight:'65vh'}}>
-                  {days.map(d=>{
-                    const dk=dateKey(d); const list=eventsByDay.get(dk)||[];
-                    return (
-                      <div key={dk} className="border-b asu-border-maroon/20" style={{height: rowH}}>
-                        <div className="px-2 pt-1 text-xs text-gray-900 font-medium">
-                          <span className="asu-maroon">{d.toLocaleDateString(undefined,{weekday:'short'})}</span>{' '}
-                          {d.toLocaleDateString(undefined,{month:'short',day:'numeric'})}
-                        </div>
-                        <div className="px-2 pb-1 flex flex-wrap gap-1">
-                          {list.slice(0,4).map((ev,i)=>(
-                            <span key={i} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border"
-                                  style={{backgroundColor:'rgba(255,198,39,0.12)', borderColor:ev.color}}
-                                  title={ev.title}>
-                              <span className="w-2 h-2 rounded" style={{background:ev.color}}></span>
-                              <span className="truncate max-w-[7rem]">{ev.title}</span>
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                {/* Left dates (compact, grows with events) */}
+<div
+  ref={leftRef}
+  className="shrink-0 border-r overflow-y-auto asu-border-maroon/20"
+  style={{ maxHeight: '65vh', width: leftColW }}
+>
+  {days.map(d => {
+    const dk = dateKey(d);
+    const list = eventsByDay.get(dk) || [];
+    const rowH = dayHeights.get(dk) || baseRowH;
+    return (
+      <div key={dk} className="border-b asu-border-maroon/20" style={{ height: rowH }}>
+        {/* Date line (very compact) */}
+        <div className="px-2 pt-1 text-[11px] text-gray-900 font-medium leading-none">
+          <span className="asu-maroon font-semibold">
+            {d.toLocaleDateString(undefined, { weekday: 'short' })}
+          </span>{' '}
+          {d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+        </div>
+
+        {/* Events stacked vertically, tiny pills */}
+        <div className="px-2 mt-1 flex flex-col gap-1">
+          {list.slice(0, maxEventLines).map((ev, i) => (
+            <span
+              key={i}
+              className="inline-flex items-center gap-1 text-[10px] px-1 py-0.5 rounded border leading-none"
+              style={{ backgroundColor: 'rgba(255,198,39,0.12)', borderColor: ev.color }}
+              title={ev.title}
+            >
+              <span className="w-2 h-2 rounded" style={{ background: ev.color }}></span>
+              <span className="truncate">{ev.title}</span>
+            </span>
+          ))}
+          {/* If many events, hint there are more */}
+          {list.length > maxEventLines && (
+            <span className="text-[10px] text-gray-500">+{list.length - maxEventLines} more</span>
+          )}
+        </div>
+      </div>
+    );
+  })}
+</div>
+
 
                 {/* Body (paint) */}
                 <div ref={bodyRef}
@@ -556,26 +753,32 @@ async function handleSubmit(){
                      onPointerMove={onPointerMove}
                      onPointerUp={onPointerUp}>
                   <div style={{width: timeSlots.length*colW}}>
-                    {days.map(d=>{
-                      const dk=dateKey(d);
-                      return (
-                        <div key={dk} className="flex border-b asu-border-maroon/20" style={{height: rowH}}>
-                          {timeSlots.map(m=>{
-                            const key=`${dk}|${minutesToHHMM(m)}`;
-                            const evs=slotEventsMap.get(key)||[];
-                            return (
-                              <div key={key} data-k={key}
-                                   className="relative h-full border-r cursor-pointer hover:bg-[#FFF0CC] asu-border-maroon/20"
-                                   style={{width: colW, background: slotBg(evs)}}
-                                   title={evs.map(e=>e.title).join(', ')}>
-                                {/* Selected overlay in ASU maroon */}
-                                {selected[key] && <div className="absolute inset-0" style={{background:'rgba(140, 29, 64, 0.45)'}}></div>}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })}
+                    {days.map(d => {
+  const dk = dateKey(d);
+  const rowH = dayHeights.get(dk) || baseRowH;
+  return (
+    <div key={dk} className="flex border-b asu-border-maroon/20" style={{ height: rowH }}>
+      {timeSlots.map(m => {
+        const key = `${dk}|${minutesToHHMM(m)}`;
+        const evs = slotEventsMap.get(key) || [];
+        return (
+          <div
+            key={key}
+            data-k={key}
+            className="relative h-full border-r cursor-pointer hover:bg-[#FFF0CC] asu-border-maroon/20"
+            style={{ width: colW, background: slotBg(evs) }}
+            title={evs.map(e => e.title).join(', ')}
+          >
+            {selected[key] && (
+              <div className="absolute inset-0" style={{ background: 'rgba(140, 29, 64, 0.45)' }}></div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+})}
+
                   </div>
                 </div>
               </div>
