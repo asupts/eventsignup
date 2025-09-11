@@ -645,7 +645,7 @@ const mergedStrings = (() => {
                     className="shrink-0 p-2 text-[10px] uppercase tracking-wide asu-maroon font-bold border-r asu-border-maroon/30"
                     style={{ width: leftColW, minWidth: '30px' }}
                   >
-                    Date
+                    Date / Time Slots
                   </div>
                   <div
                     ref={headerRef}
@@ -661,7 +661,7 @@ const mergedStrings = (() => {
   const endLabel = minutesToHHMM(Math.min(m + intervalMin, eMins));
 
   // compact formats for tight cells on phones
-  const hoursOnly   = (s) => s.slice(0, 2);            // "10:00" -> "10"
+  const hoursOnly   = (s) => s.slice(0, 5);            // "10:00" -> "10"
   const tooTight    = isXS && colW < 72;               // show only start hour
   const compactPair = isXS && colW >= 72 && colW < 96; // show "10–14"
 
@@ -674,7 +674,11 @@ const mergedStrings = (() => {
     >
       {tooTight ? (
         // just the start hour
-        <span className="asu-maroon whitespace-nowrap">{hoursOnly(start)}</span>
+        <span>
+          <span className="asu-maroon whitespace-nowrap">{hoursOnly(start)}</span>
+          <br />
+          <span className="asu-maroon whitespace-nowrap">{hoursOnly(endLabel)}</span>
+        </span>
       ) : compactPair ? (
         // hours only, start–end
         <span className="asu-maroon whitespace-nowrap">
