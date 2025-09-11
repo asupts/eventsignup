@@ -32,11 +32,8 @@
     .nowrap{white-space:nowrap}
 
     @media (max-width: 640px) {
-      /* Lock header from user scrolling on phones; we still scroll it via JS */
-      .header-locked { overflow-x: hidden !important; pointer-events: none; }
-      /* Optional: hide any scrollbar decoration if it still shows */
-      .xs-hide-scrollbar::-webkit-scrollbar { display: none; }
-    }
+  .header-locked { overflow-x: auto !important; pointer-events: auto; }
+}
 
   </style>
 </head>
@@ -279,6 +276,7 @@
         setIsDragging(true);
         toggleCell(k,isOn?'remove':'add');
       }
+      
       function onPointerMove(e){
         if(!isDragging) return;
         const point=(e.touches&&e.touches[0])?{x:e.touches[0].clientX,y:e.touches[0].clientY}:{x:e.clientX,y:e.clientY};
@@ -649,7 +647,7 @@ const mergedStrings = (() => {
                   </div>
                   <div
                     ref={headerRef}
-                    className="nice-scroll header-locked sm:overflow-x-auto"
+                    className="nice-scroll header-scroll overflow-x-auto"
                     style={{ maxWidth: '100%' }}
                   >
                     <div className="relative" style={{ width: timeSlots.length * colW }}>
