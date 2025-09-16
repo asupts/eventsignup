@@ -21,14 +21,28 @@
     .asu-border-maroon { border-color: #8C1D40; }
     .asu-border-gold { border-color: #FFC627; }
 
-    /* Scrollbars */
+    /* Always-visible scrollbars */
+    .always-scroll   { overflow: scroll;  scrollbar-gutter: stable both-edges; }
+    .always-scroll-x { overflow-x: scroll; overflow-y: hidden; scrollbar-gutter: stable; }
+    .always-scroll-y { overflow-y: scroll; overflow-x: hidden; scrollbar-gutter: stable both-edges; }
+
+    /* iOS/Safari momentum scrolling */
+    .always-scroll,
+    .always-scroll-x,
+    .always-scroll-y {
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* (your existing nice-scroll stays) */
     .nice-scroll::-webkit-scrollbar{height:10px;width:10px}
     .nice-scroll::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:9999px}
     .nice-scroll::-webkit-scrollbar-track{background:#f3f4f6}
 
+
     /* Painting surface: block one-finger scrolling; allow two-finger when JS toggles .allow-scroll */
-    .paintable{touch-action:none;-webkit-user-select:none;user-select:none}
-    .paintable.allow-scroll{touch-action:auto}
+    .paintable { touch-action:none; user-select:none; }
+    .paintable.allow-scroll { touch-action: two-finger-pan; user-select:auto; }
+
     .nowrap{white-space:nowrap}
 
     @media (max-width: 640px) {
@@ -42,14 +56,6 @@
 
   <script type="text/babel">
     const {useMemo,useState,useEffect,useRef} = React;
-
-    // ===== Fixed wiring (hidden to participants) =====
-    //const WEBAPP_URL   = "https://script.google.com/macros/s/AKfycbx3Jp4l6UMjhbEX5eZWNA_NjYCyodn7vyLRF6_Nrk-DSQ_ryYho3xJdnVk5F0zDd0R1qg/exec";
-    // const SHEET_ID     = "1EugnoIdz0mA2rUlyyC-glf7isAXz8GA59bn8tZ7lx2w";
-    // const EVENTS_TAB   = "Events";
-    // const CONFIG_TAB   = "Config";
-
-
 
 
     // ===== Utilities =====
@@ -180,22 +186,19 @@
           }, [timeSlots.length]);
 
       // Fetch config + events
+      const BASE = "https://script.google.com/macros/s/AKfycbx3Jp4l6UMjhbEX5eZWNA_NjYCyodn7vyLRF6_Nrk-DSQ_ryYho3xJdnVk5F0zDd0R1qg/exec"; // from new deployment
       async function loadAll(){
         setLoading(true); setError('');
         try{
           // 1) Config
 
-              const BASE = "https://script.google.com/macros/s/AKfycbx3Jp4l6UMjhbEX5eZWNA_NjYCyodn7vyLRF6_Nrk-DSQ_ryYho3xJdnVk5F0zDd0R1qg/exec"; // from new deployment
-        const getJSON = (path) => fetch(`${BASE}?path=${encodeURIComponent(path)}`, {
-          method: 'GET',
-          headers: { 'Accept': 'application/json' }
-        }).then(r => r.json);
+// fix:
+      const getJSON = (path) =>
+        fetch(`${BASE}?path=${encodeURIComponent(path)}`, { headers:{Accept:'application/json'} })
+          .then(r => r.json());
 
         // load:
-        const cfg = await getJSON('config');
-        
-
-          
+          const cfg = await jsonp(`${BASE}?path=config`);
           if(!cfg?.ok) throw new Error(cfg?.error||'Failed to read Config');
           setStartDateStr(cfg.config.startDate);
           setEndDateStr(cfg.config.endDate);
@@ -204,7 +207,7 @@
           setIntervalMin(cfg.config.intervalMin);
 
           // 2) Events
-          const ev  = await getJSON('events');
+          const ev  = await jsonp(`${BASE}?path=events`);
           if(!ev?.ok) throw new Error(ev?.error||'Failed to read Events');
           const mapped=(ev.events||[]).map(e=>({title:e.title||'Untitled',start:tryDate(e.start),end:tryDate(e.end),color:colorFor(e.title||'Untitled')}))
                                       .filter(e=>e.start&&e.end);
@@ -388,40 +391,78 @@ const mergedStrings = (() => {
     })
   }));
 
- const payload = {
-  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-  name, email,
-  startDate: startDateStr, endDate: endDateStr,
-  startTime: startTimeStr, endTime: endTimeStr,
-  intervalMinutes: intervalMin,
-  selections,
-  compressed,           // slot-accurate (starts)
-  clippedCompressed,    // label-ready ranges (optional)
-  mergedStrings         // <-- authoritative per-day text to store
-};
+const payload = {
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    name, email,
+    startDate: startDateStr, endDate: endDateStr,
+    startTime: startTimeStr, endTime: endTimeStr,
+    intervalMinutes: intervalMin,
+    selections,
+    // mergedStrings,  // optional – keep only this extra if you truly need exact labels
+  };
 
+ setSubmitting(true);
 
-  setSubmitting(true);
-  try{
-    const fd=new FormData(); fd.append('data', JSON.stringify(payload));
-    const res=await fetch(WEBAPP_URL,{method:'POST',body:fd});
-    let ok=false;
-    try{ ok=(await res.json()).ok; }catch(_){}
+  // 1) Create a hidden iframe
+  const iframeName = "submit_iframe_" + Math.random().toString(36).slice(2);
+  const iframe = document.createElement("iframe");
+  iframe.name = iframeName;
+  iframe.style.display = "none";
+  document.body.appendChild(iframe);
 
-    const header = ok ? 'Submitted!' : 'Submitted (check sheet).';
-    alert(
-      `${header}\n\n`+
-      `Name: ${name}\nEmail: ${email}\n`+
-      `Total slots: ${selections.length}\n\n`+
-      summaryLines.join('\n')
-    );
+  // 2) Build a form that POSTS to Apps Script
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.target = iframeName;
+  form.action = `${BASE}?path=submit&format=iframe`; // tell server to reply with HTML+postMessage
+  form.style.display = "none";
 
-    if(ok){ setSelected({}); setName(''); setEmail(''); }
-  }catch(err){
-    alert('Submit failed: '+(err?.message||String(err)));
-  }finally{
+  const add = (name, value) => {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  };
+  add("data", JSON.stringify(payload));
+  document.body.appendChild(form);
+
+  // 3) Listen for the server’s postMessage
+  const onMsg = (ev) => {
+    // You can check ev.origin if you want to restrict to the Apps Script origin
+    if (!ev || !ev.data || ev.data.__asuSubmit !== true) return;
+    window.removeEventListener("message", onMsg);
+
+    const { ok, error } = ev.data;
+    const header = ok ? "Submitted!" : "Submission failed.";
+    const extra  = error ? `\n\nServer error: ${error}` : "";
+
+    
+    if (ok){ 
+      alert(`${header}\n\nName: ${name}\nEmail: ${email}\nTotal slots: ${Object.keys(selected).length}${extra}\nSelect Slots:\n- ${summaryLines.join('\n- ')}`);
+      setSelected({}); setName(''); setEmail(''); 
+    } else {
+      alert(`${header}${extra}\n\nPlease try again later or contact the administrator.`);
+    }
     setSubmitting(false);
-  }
+
+    // cleanup
+    setTimeout(() => { form.remove(); iframe.remove(); }, 0);
+  };
+  window.addEventListener("message", onMsg);
+
+  // 4) Submit
+  form.submit();
+
+  // Optional: add a timeout fallback
+  setTimeout(() => {
+    if (submitting) {
+      setSubmitting(false);
+      alert("Submitted (no confirmation received). Please check the sheet.");
+      form.remove(); iframe.remove();
+      window.removeEventListener("message", onMsg);
+    }
+  }, 15000);
 }
 
 // Layout numbers
@@ -660,10 +701,11 @@ const mergedStrings = (() => {
                     Date / Time Slots
                   </div>
                   <div
-                    ref={headerRef}
-                    className="nice-scroll header-scroll overflow-x-auto"
-                    style={{ maxWidth: '100%' }}
-                  >
+                      ref={headerRef}
+                      className="nice-scroll header-scroll always-scroll-x"
+                      style={{ maxWidth: '100%' }}
+                    >
+
                     <div className="relative" style={{ width: timeSlots.length * colW }}>
                       {/* keep your optional end-time marker here if you added it */}
                       <div className="flex">
@@ -720,9 +762,10 @@ const mergedStrings = (() => {
                 {/* Left dates (compact, grows with events) */}
 <div
   ref={leftRef}
-  className="shrink-0 border-r overflow-y-auto asu-border-maroon/20"
+  className="shrink-0 border-r nice-scroll always-scroll-y asu-border-maroon/20"
   style={{ maxHeight: '65vh', width: leftColW }}
 >
+
   {days.map(d => {
     const dk = dateKey(d);
     const list = eventsByDay.get(dk) || [];
@@ -762,12 +805,15 @@ const mergedStrings = (() => {
 
 
                 {/* Body (paint) */}
-                <div ref={bodyRef}
-                     className="overflow-auto nice-scroll paintable select-none"
-                     style={{maxHeight:'65vh'}}
-                     onPointerDown={onPointerDown}
-                     onPointerMove={onPointerMove}
-                     onPointerUp={onPointerUp}>
+              <div
+              ref={bodyRef}
+              className="nice-scroll paintable always-scroll select-none"
+              style={{ maxHeight:'65vh' }}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+            >
+
                   <div style={{width: timeSlots.length*colW}}>
                     {days.map(d => {
   const dk = dateKey(d);
