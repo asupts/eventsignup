@@ -44,10 +44,13 @@
     const {useMemo,useState,useEffect,useRef} = React;
 
     // ===== Fixed wiring (hidden to participants) =====
-    const WEBAPP_URL   = "https://script.google.com/macros/s/AKfycbx3Jp4l6UMjhbEX5eZWNA_NjYCyodn7vyLRF6_Nrk-DSQ_ryYho3xJdnVk5F0zDd0R1qg/exec";
-    const SHEET_ID     = "1EugnoIdz0mA2rUlyyC-glf7isAXz8GA59bn8tZ7lx2w";
-    const EVENTS_TAB   = "Events";
-    const CONFIG_TAB   = "Config";
+    //const WEBAPP_URL   = "https://script.google.com/macros/s/AKfycbx3Jp4l6UMjhbEX5eZWNA_NjYCyodn7vyLRF6_Nrk-DSQ_ryYho3xJdnVk5F0zDd0R1qg/exec";
+    // const SHEET_ID     = "1EugnoIdz0mA2rUlyyC-glf7isAXz8GA59bn8tZ7lx2w";
+    // const EVENTS_TAB   = "Events";
+    // const CONFIG_TAB   = "Config";
+
+
+
 
     // ===== Utilities =====
     const pad=n=>String(n).padStart(2,'0');
@@ -181,7 +184,18 @@
         setLoading(true); setError('');
         try{
           // 1) Config
-          const cfg = await jsonp(`${WEBAPP_URL}?id=${encodeURIComponent(SHEET_ID)}&sheet=${encodeURIComponent(CONFIG_TAB)}&mode=config`);
+
+              const BASE = "https://script.google.com/macros/s/AKfycbx3Jp4l6UMjhbEX5eZWNA_NjYCyodn7vyLRF6_Nrk-DSQ_ryYho3xJdnVk5F0zDd0R1qg/exec"; // from new deployment
+        const getJSON = (path) => fetch(`${BASE}?path=${encodeURIComponent(path)}`, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' }
+        }).then(r => r.json);
+
+        // load:
+        const cfg = await getJSON('config');
+        
+
+          
           if(!cfg?.ok) throw new Error(cfg?.error||'Failed to read Config');
           setStartDateStr(cfg.config.startDate);
           setEndDateStr(cfg.config.endDate);
@@ -190,7 +204,7 @@
           setIntervalMin(cfg.config.intervalMin);
 
           // 2) Events
-          const ev = await jsonp(`${WEBAPP_URL}?id=${encodeURIComponent(SHEET_ID)}&sheet=${encodeURIComponent(EVENTS_TAB)}`);
+          const ev  = await getJSON('events');
           if(!ev?.ok) throw new Error(ev?.error||'Failed to read Events');
           const mapped=(ev.events||[]).map(e=>({title:e.title||'Untitled',start:tryDate(e.start),end:tryDate(e.end),color:colorFor(e.title||'Untitled')}))
                                       .filter(e=>e.start&&e.end);
