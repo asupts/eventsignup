@@ -68,16 +68,33 @@
     const tryDate=v=>{const d=v instanceof Date?v:new Date(v);return isNaN(d)?null:d};
     const dateKey = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 
-    function jsonp(url){
-      return new Promise((resolve,reject)=>{
-        const cb="__cb_"+Math.random().toString(36).slice(2);
-        window[cb]=(data)=>{try{resolve(data)}finally{delete window[cb];s.remove();}};
-        const s=document.createElement('script');
-        s.src=url+(url.includes('?')?'&':'?')+`callback=${cb}`;
-        s.onerror=()=>{delete window[cb];s.remove();reject(new Error('JSONP failed'))};
-        document.body.appendChild(s);
-      });
+    function jsonp(url, timeoutMs = 12000){
+  return new Promise((resolve, reject) => {
+    const cb = "__cb_" + Math.random().toString(36).slice(2);
+    const s  = document.createElement('script');
+
+    // cache-buster
+    const bust = "_ts=" + Date.now();
+    const sep  = url.includes('?') ? '&' : '?';
+    s.src = url + sep + "callback=" + cb + "&" + bust;
+
+    let timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('JSONP timeout'));
+    }, timeoutMs);
+
+    function cleanup(){
+      clearTimeout(timer);
+      delete window[cb];
+      s.remove();
     }
+
+    window[cb] = (data) => { cleanup(); resolve(data); };
+    s.onerror = () => { cleanup(); reject(new Error('JSONP failed')); };
+    document.body.appendChild(s);
+  });
+}
+
 
     // Colors for event legend/backgrounds (keep event-specific colors)
     const PALETTE=['#60a5fa','#f472b6','#34d399','#fbbf24','#a78bfa','#f87171','#22d3ee','#fb7185'];
@@ -209,8 +226,16 @@
           // 2) Events
           const ev  = await jsonp(`${BASE}?path=events`);
           if(!ev?.ok) throw new Error(ev?.error||'Failed to read Events');
-          const mapped=(ev.events||[]).map(e=>({title:e.title||'Untitled',start:tryDate(e.start),end:tryDate(e.end),color:colorFor(e.title||'Untitled')}))
-                                      .filter(e=>e.start&&e.end);
+          const mapped = (ev.events || [])
+                .map(e => {
+                  const start = tryDate(e.start), end = tryDate(e.end);
+                  if (!start || !end) return null;
+                  const title = e.title || 'Untitled';
+                  const colorKey = `${title}|${start.toISOString()}`; // instance-based
+                  return { title, start, end, color: colorFor(colorKey) };
+                })
+                .filter(Boolean);
+
           setEvents(mapped);
         }catch(err){
           setError(err?.message||String(err));
@@ -439,7 +464,7 @@ const payload = {
 
     
     if (ok){ 
-      alert(`${header}\n\nName: ${name}\nEmail: ${email}\nTotal slots: ${Object.keys(selected).length}${extra}\nSelect Slots:\n- ${summaryLines.join('\n- ')}`);
+      alert(`${header}\n\nName: ${name}\nEmail: ${email}\nTotal slots: ${Object.keys(selected).length}${extra}\nSelected Slots:\n- ${summaryLines.join('\n- ')}`);
       setSelected({}); setName(''); setEmail(''); 
     } else {
       alert(`${header}${extra}\n\nPlease try again later or contact the administrator.`);
@@ -610,16 +635,16 @@ const payload = {
               <h2 className="font-medium mb-3 asu-maroon">Contact</h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm mb-1 asu-maroon">Name *</label>
+                  <label className="block text-sm mb-1 asu-maroon">Full Name *</label>
                   <input value={name} onChange={e=>setName(e.target.value)}
                          className="w-full border rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFC627] border-gray-300"
                          placeholder="Your name"/>
                 </div>
                 <div>
-                  <label className="block text-sm mb-1 asu-maroon">Email *</label>
+                  <label className="block text-sm mb-1 asu-maroon">ASU Email *</label>
                   <input type="email" value={email} onChange={e=>setEmail(e.target.value)}
                          className="w-full border rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFC627] border-gray-300"
-                         placeholder="you@example.com"/>
+                         placeholder="ASURITE@asu.com"/>
                 </div>
               </div>
             </div>
@@ -627,7 +652,7 @@ const payload = {
             {/* Time window (read-only) */}
             <div className="rounded-2xl shadow-sm bg-white p-4 mb-3 border asu-border-maroon/20">
               <h2 className="font-medium mb-3 asu-maroon">Time window</h2>
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-5">
                 <div>
                   <label className="block text-sm mb-1 asu-maroon">Start date</label>
                   <input type="date" value={startDateStr} disabled className="w-full border rounded-xl px-3 py-2 asu-bg-maroon-soft"/>
@@ -645,8 +670,8 @@ const payload = {
                   <input type="time" value={endTimeStr} disabled className="w-full border rounded-xl px-3 py-2 asu-bg-maroon-soft"/>
                 </div>
                 <div>
-                  <label className="block text-sm mb-1 asu-maroon">Interval (min)</label>
-                  <input value={intervalMin} disabled className="w-full border rounded-xl px-3 py-2 asu-bg-maroon-soft"/>
+                  <label className="block text-sm mb-1 asu-maroon">Interval (Hours)</label>
+                  <input value={intervalMin/60} disabled className="w-full border rounded-xl px-3 py-2 asu-bg-maroon-soft" style={{color: 'grey'}}/>
                 </div>
               </div>
             </div>
